@@ -19,6 +19,15 @@ static std::string mbtiles_filename;
 
 static std::string ext;
 
+// Whether or not to automatically compute the valid levels of the MBTiles file.
+// By default this is false and will not scan the table to determine the min/max.
+// This can take time when first loading the file so if you know the levels
+// of your file up front you can set this to false and just use the min_level and
+// max_level settings of the tile source.
+static bool compute_levels = false;
+static optional<int> minLevel;
+static optional<int> maxLevel;
+
 constexpr char* LOG_FILE_NAME = "fuse-mbtiles.log";
 static std::ofstream log;
 
@@ -293,14 +302,14 @@ void* mbtiles_init(struct fuse_conn_info *conn)
 {
 	Database database;
 
-	optional<int> minLevel = getMetaDataInt(database, "minzoom");
+	minLevel = getMetaDataInt(database, "minzoom");
 	if ( ! minLevel)
 	{
 		log << "getMetaData(minzoom) failed: " << database.errmsg() << std::endl;
 		return nullptr;
 	}
 
-	optional<int> maxLevel = getMetaDataInt(database, "maxzoom");
+	maxLevel = getMetaDataInt(database, "maxzoom");
 	if ( ! maxLevel)
 	{
 		log << "getMetaData(maxzoom) failed: " << database.errmsg() << std::endl;
@@ -377,20 +386,28 @@ int mbtiles_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		filler(buf, ".", nullptr, 0);
 		filler(buf, "..", nullptr, 0);
 
-		sqlite3_stmt* select = nullptr;
-		int rc = sqlite3_prepare_v2(database,
-			"SELECT DISTINCT zoom_level FROM tiles",
-			-1, &select, nullptr);
-		if (rc != SQLITE_OK)
+		if ( ! compute_levels && minLevel && maxLevel)
 		{
-			log << "sqlite3_prepare_v2 failed: " << database.errmsg() << std::endl;
-			return 1;
+			for (int level = *minLevel; level <= *maxLevel; ++level)
+				filler(buf, std::to_string(level).c_str(), nullptr, 0);
 		}
+		else
+		{
+			sqlite3_stmt* select = nullptr;
+			int rc = sqlite3_prepare_v2(database,
+				"SELECT DISTINCT zoom_level FROM tiles",
+				-1, &select, nullptr);
+			if (rc != SQLITE_OK)
+			{
+				log << "sqlite3_prepare_v2 failed: " << database.errmsg() << std::endl;
+				return 1;
+			}
 
-		while (sqlite3_step(select) == SQLITE_ROW)
-			filler(buf, reinterpret_cast<const char*>(sqlite3_column_text(select, 0)), nullptr, 0);
+			while (sqlite3_step(select) == SQLITE_ROW)
+				filler(buf, reinterpret_cast<const char*>(sqlite3_column_text(select, 0)), nullptr, 0);
 
-		sqlite3_finalize(select);
+			sqlite3_finalize(select);
+		}
 
 		return 0;
 	}
@@ -513,6 +530,11 @@ int main(int argc, char *argv[])
 	{
 		std::cerr << "can't open file " << LOG_FILE_NAME << std::endl;
 		return 1;
+	}
+
+	if (getenv("FUSE_MBTILES_COMPUTE_LEVELS"))
+	{
+		compute_levels = true;
 	}
 
 	// last arg - mbtiles file name
