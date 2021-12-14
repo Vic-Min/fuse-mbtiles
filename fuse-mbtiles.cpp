@@ -4,7 +4,6 @@
 #include <zlib.h>
 #include <string.h>
 #include <iostream>
-#include <fstream>
 #include <sstream>
 #include <assert.h>
 #if __cplusplus >= 201703L
@@ -14,6 +13,11 @@ using std::optional;
 #include <boost/optional.hpp>
 using boost::optional;
 #endif
+#include "Logger.h"
+#ifdef USE_LOGGER
+#include <unordered_map>
+#endif //USE_LOGGER
+
 
 static std::string mbtiles_filename;
 
@@ -28,10 +32,6 @@ static bool compute_levels = false;
 static optional<int> minLevel;
 static optional<int> maxLevel;
 
-constexpr char* LOG_FILE_NAME = "fuse-mbtiles.log";
-static std::ofstream log;
-
-
 class Database
 {
 public:
@@ -41,7 +41,7 @@ public:
 			SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, nullptr);
 		if (rc != SQLITE_OK)
 		{
-			log << "sqlite3_open_v2 failed: " << errmsg() << std::endl;
+			LOG_ERROR("sqlite3_open_v2 failed: %s", errmsg());
 		}
 	}
 
@@ -50,7 +50,7 @@ public:
 		int rc = sqlite3_close(database_);
 		if (rc != SQLITE_OK)
 		{
-			log << "sqlite3_close failed: " << errmsg() << std::endl;
+			LOG_ERROR("sqlite3_close failed: %s", errmsg());
 		}
 	}
 
@@ -71,6 +71,8 @@ private:
 
 static optional<int> getMetaDataInt(Database& database, const char* key)
 {
+	LOG_TRACE("getMetaDataInt: key: %s", key);
+
 	optional<int> ret;
 
 	sqlite3_stmt* select = nullptr;
@@ -78,14 +80,14 @@ static optional<int> getMetaDataInt(Database& database, const char* key)
 	int rc = sqlite3_prepare_v2(database, query, -1, &select, nullptr);
 	if (rc != SQLITE_OK)
 	{
-		log << "sqlite3_prepare_v2 failed: " << database.errmsg() << std::endl;
+		LOG_ERROR("sqlite3_prepare_v2 failed: %s", database.errmsg());
 		return ret;
 	}
 
 	rc = sqlite3_bind_text(select, 1, key, strlen(key), SQLITE_STATIC);
 	if (rc != SQLITE_OK)
 	{
-		log << "sqlite3_bind_text failed: " << database.errmsg() << std::endl;
+		LOG_ERROR("sqlite3_bind_text failed: %s", database.errmsg());
 		return ret;
 	}
 
@@ -96,7 +98,7 @@ static optional<int> getMetaDataInt(Database& database, const char* key)
 	}
 	else
 	{
-		log << "sqlite3_step failed: " << database.errmsg() << std::endl;
+		LOG_ERROR("sqlite3_step failed: %s", database.errmsg());
 		return ret;
 	}
 
@@ -107,6 +109,8 @@ static optional<int> getMetaDataInt(Database& database, const char* key)
 
 static optional<std::string> getMetaDataString(Database& database, const char* key)
 {
+	LOG_TRACE("getMetaDataString: key: %s", key);
+
 	optional<std::string> ret;
 
 	sqlite3_stmt* select = nullptr;
@@ -114,14 +118,14 @@ static optional<std::string> getMetaDataString(Database& database, const char* k
 	int rc = sqlite3_prepare_v2(database, query, -1, &select, nullptr);
 	if (rc != SQLITE_OK)
 	{
-		log << "sqlite3_prepare_v2 failed: " << database.errmsg() << std::endl;
+		LOG_ERROR("sqlite3_prepare_v2 failed: %s", database.errmsg());
 		return ret;
 	}
 
 	rc = sqlite3_bind_text(select, 1, key, strlen(key), SQLITE_STATIC);
 	if (rc != SQLITE_OK)
 	{
-		log << "sqlite3_bind_text failed: " << database.errmsg() << std::endl;
+		LOG_ERROR("sqlite3_bind_text failed: %s", database.errmsg());
 		return ret;
 	}
 
@@ -132,7 +136,7 @@ static optional<std::string> getMetaDataString(Database& database, const char* k
 	}
 	else
 	{
-		log << "sqlite3_step failed: " << database.errmsg() << std::endl;
+		LOG_ERROR("sqlite3_step failed: %s", database.errmsg());
 		return ret;
 	}
 
@@ -161,7 +165,7 @@ static bool decompress(std::istream& fin, std::string& target)
 
 	if (ret != Z_OK)
 	{
-		log << "decompress: failed to init" << std::endl;
+		LOG_ERROR("decompress: failed to init");
 		return ret != 0;
 	}
 
@@ -204,6 +208,9 @@ static bool decompress(std::istream& fin, std::string& target)
 
 static optional<std::string> getTile(Database& database, int zoom_level, int tile_column, int tile_row)
 {
+	LOG_TRACE("getTile: zoom_level: %i, tile_column: %i, tile_row: %i",
+		zoom_level, tile_column, tile_row);
+
 	assert(zoom_level >= 0);
 	assert(tile_column >= 0);
 	assert(tile_row >= 0);
@@ -216,7 +223,7 @@ static optional<std::string> getTile(Database& database, int zoom_level, int til
 		-1, &select, nullptr);
 	if (rc != SQLITE_OK)
 	{
-		log << "sqlite3_prepare_v2 failed: " << database.errmsg() << std::endl;
+		LOG_ERROR("sqlite3_prepare_v2 failed: %s", database.errmsg());
 		return ret;
 	}
 
@@ -246,7 +253,7 @@ static optional<std::string> getTile(Database& database, int zoom_level, int til
 		}
 		else
 		{
-			log << "decompress failed" << std::endl;
+			LOG_ERROR("decompress failed");
 		}
 	}
 
@@ -256,6 +263,9 @@ static optional<std::string> getTile(Database& database, int zoom_level, int til
 
 static int getTileOriginalSize(Database& database, int zoom_level, int tile_column, int tile_row)
 {
+	LOG_TRACE("getTileOriginalSize: zoom_level: %i, tile_column: %i, tile_row: %i",
+		zoom_level, tile_column, tile_row);
+
 	assert(zoom_level >= 0);
 	assert(tile_column >= 0);
 	assert(tile_row >= 0);
@@ -268,7 +278,7 @@ static int getTileOriginalSize(Database& database, int zoom_level, int tile_colu
 		-1, &select, nullptr);
 	if (rc != SQLITE_OK)
 	{
-		log << "sqlite3_prepare_v2 failed: " << database.errmsg() << std::endl;
+		LOG_ERROR("sqlite3_prepare_v2 failed: %s", database.errmsg());
 		return -1;
 	}
 	sqlite3_bind_int(select, 1, zoom_level);
@@ -285,6 +295,9 @@ static int getTileOriginalSize(Database& database, int zoom_level, int tile_colu
 
 static int getTileSize(Database& database, int zoom_level, int tile_column, int tile_row)
 {
+	LOG_TRACE("getTileSize: zoom_level: %i, tile_column: %i, tile_row: %i",
+		zoom_level, tile_column, tile_row);
+
 	if (ext == "pbf")
 	{
 		optional<std::string> tile = getTile(database, zoom_level, tile_column, tile_row);
@@ -297,34 +310,35 @@ static int getTileSize(Database& database, int zoom_level, int tile_column, int 
 	return -1;
 }
 
-
 void* mbtiles_init(struct fuse_conn_info *conn)
 {
+	LOG_TRACE("mbtiles_init: conn: %X", conn);
+
 	Database database;
 
 	minLevel = getMetaDataInt(database, "minzoom");
 	if ( ! minLevel)
 	{
-		log << "getMetaData(minzoom) failed: " << database.errmsg() << std::endl;
+		LOG_ERROR("getMetaData(minzoom) failed: %s", database.errmsg());
 		return nullptr;
 	}
 
 	maxLevel = getMetaDataInt(database, "maxzoom");
 	if ( ! maxLevel)
 	{
-		log << "getMetaData(maxzoom) failed: " << database.errmsg() << std::endl;
+		LOG_ERROR("getMetaData(maxzoom) failed: %s", database.errmsg());
 		return nullptr;
 	}
 
 	optional<std::string> format = getMetaDataString(database, "format");
 	if ( ! format)
 	{
-		log << "getMetaData(format) failed: " << database.errmsg() << std::endl;
+		LOG_ERROR("getMetaData(format) failed: %s", database.errmsg());
 		return nullptr;
 	}
 	if ( ! (*format == "png" || *format == "jpg" || *format == "pbf"))
 	{
-		log << "unsupported format: " << *format << std::endl;
+		LOG_ERROR("unsupported format: %s", format->c_str());
 		return nullptr;
 	}
 
@@ -335,6 +349,8 @@ void* mbtiles_init(struct fuse_conn_info *conn)
 
 int mbtiles_getattr(const char *path, struct stat *stbuf)
 {
+	LOG_TRACE("mbtiles_getattr: path: %s", path);
+
 	memset(stbuf, 0, sizeof(struct stat));
 
 	int zoom_level = -1;
@@ -370,6 +386,8 @@ int mbtiles_getattr(const char *path, struct stat *stbuf)
 int mbtiles_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	off_t offset, struct fuse_file_info *fi)
 {
+	LOG_TRACE("mbtiles_readdir: path: %s", path);
+
 	(void)offset;
 	(void)fi;
 
@@ -399,7 +417,7 @@ int mbtiles_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 				-1, &select, nullptr);
 			if (rc != SQLITE_OK)
 			{
-				log << "sqlite3_prepare_v2 failed: " << database.errmsg() << std::endl;
+				LOG_ERROR("sqlite3_prepare_v2 failed: %s", database.errmsg());
 				return 1;
 			}
 
@@ -424,7 +442,7 @@ int mbtiles_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 			-1, &select, nullptr);
 		if (rc != SQLITE_OK)
 		{
-			log << "sqlite3_prepare_v2 failed: " << database.errmsg() << std::endl;
+			LOG_ERROR("sqlite3_prepare_v2 failed: %s", database.errmsg());
 			return 1;
 		}
 
@@ -449,7 +467,7 @@ int mbtiles_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 			-1, &select, nullptr);
 		if (rc != SQLITE_OK)
 		{
-			log << "sqlite3_prepare_v2 failed: " << database.errmsg() << std::endl;
+			LOG_ERROR("sqlite3_prepare_v2 failed: %s", database.errmsg());
 			return 1;
 		}
 
@@ -473,6 +491,8 @@ int mbtiles_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 
 int mbtiles_open(const char *path, struct fuse_file_info *fi)
 {
+	LOG_TRACE("mbtiles_open: path: %s", path);
+
 	int zoom_level = -1;
 	int tile_column = -1;
 	int tile_row = -1;
@@ -493,6 +513,8 @@ int mbtiles_open(const char *path, struct fuse_file_info *fi)
 int mbtiles_read(const char *path, char *buf, size_t size, off_t offset,
 	struct fuse_file_info *fi)
 {
+	LOG_TRACE("mbtiles_read: path: %s", path);
+
 	(void)fi;
 	int zoom_level = -1;
 	int tile_column = -1;
@@ -516,6 +538,49 @@ int mbtiles_read(const char *path, char *buf, size_t size, off_t offset,
 	return size;
 }
 
+#ifdef USE_LOGGER
+static int createLogger()
+{
+	char* logLevelStr = getenv("FUSE_MBTILES_LOG_LEVEL");
+	if ( ! logLevelStr)
+		return 0;
+
+	static const std::unordered_map<std::string, Logger::Level> logLevelNames =
+	{{
+		{"OFF",     Logger::LEVEL_OFF    },
+		{"ERROR",   Logger::LEVEL_ERROR  },
+		{"WARNING", Logger::LEVEL_WARNING},
+		{"DEBUG",   Logger::LEVEL_DEBUG  },
+		{"TRACE",   Logger::LEVEL_TRACE  },
+	}};
+
+	auto it = logLevelNames.find(logLevelStr);
+	if (it == logLevelNames.end())
+	{
+		std::cerr << "invalid Log Level: " << logLevelStr << std::endl;
+		return 1;
+	}
+	
+	Logger::Level logLevel = it->second;
+	if (logLevel == Logger::LEVEL_OFF)
+		return 0;
+	
+	std::string logParams;
+	char* logParamsStr = getenv("FUSE_MBTILES_LOG_PARAMS");
+	if (logParamsStr)
+		logParams = logParamsStr;
+
+	logger = std::make_unique<Logger>(logLevel, logParams);
+	if ( ! logger || ! logger->on(logLevel))
+	{
+		std::cerr << "can't create logger, level: " << logLevelStr << ", params: " << logParams << std::endl;
+		return 1;
+	}
+
+	return 0;
+}
+#endif
+
 
 int main(int argc, char *argv[])
 {
@@ -525,12 +590,11 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-	log.open(LOG_FILE_NAME);
-	if ( ! log)
-	{
-		std::cerr << "can't open file " << LOG_FILE_NAME << std::endl;
-		return 1;
-	}
+#ifdef USE_LOGGER
+	int ret = createLogger();
+	if (ret)
+		return ret;
+#endif
 
 	if (getenv("FUSE_MBTILES_COMPUTE_LEVELS"))
 	{
