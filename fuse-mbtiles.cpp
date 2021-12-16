@@ -539,9 +539,10 @@ int mbtiles_read(const char *path, char *buf, size_t size, off_t offset,
 }
 
 #ifdef USE_LOGGER
-static int createLogger()
+static int createLogger(const char* logLevelStr, const char* logParamsStr)
 {
-	char* logLevelStr = getenv("FUSE_MBTILES_LOG_LEVEL");
+	if ( ! logLevelStr)
+		logLevelStr = getenv("FUSE_MBTILES_LOG_LEVEL");
 	if ( ! logLevelStr)
 		return 0;
 
@@ -566,7 +567,8 @@ static int createLogger()
 		return 0;
 	
 	std::string logParams;
-	char* logParamsStr = getenv("FUSE_MBTILES_LOG_PARAMS");
+	if ( ! logParamsStr)
+		logParamsStr = getenv("FUSE_MBTILES_LOG_PARAMS");
 	if (logParamsStr)
 		logParams = logParamsStr;
 
@@ -581,29 +583,91 @@ static int createLogger()
 }
 #endif
 
+struct options
+{
+	bool compute_levels = false;
+	char *log_level = nullptr;
+	char *log_params = nullptr;
+} options;
+
+enum {
+	KEY_HELP,
+};
+
+#define OPT_DEF(t, p, v) { t, offsetof(struct options, p), v }
+static struct fuse_opt options_desc[] =
+{
+	OPT_DEF("compute_levels",         compute_levels, 1),
+	OPT_DEF("no_compute_levels",      compute_levels, 0),
+	OPT_DEF("--compute_levels=true",  compute_levels, 1),
+	OPT_DEF("--compute_levels=false", compute_levels, 0),
+	OPT_DEF("log_level=%s",           log_level, 0),
+	OPT_DEF("--log_level %s",         log_level, 0),
+	OPT_DEF("log_params=%s",          log_params, 0),
+	OPT_DEF("--log_params %s",        log_params, 0),
+
+	FUSE_OPT_KEY("-h", KEY_HELP),
+	FUSE_OPT_KEY("--help", KEY_HELP),
+
+	FUSE_OPT_END,
+};
+#undef OPT_DEF
+
+static void use(const char *prog_name)
+{
+	std::cerr << "use: " << prog_name << " [options] <mount_point> <mbtiles>" << std::endl;
+	std::cerr <<
+		"fuse_mbtiles options:\n"
+		"    -o compute_levels     - compute the minzoom/maxzoom values from the 'tiles' table\n"
+		"    -o no_compute_levels  - use the minzoom/maxzoom values from the 'metadata' table (default)\n"
+		"    -o log_level=STRING   - must be OFF (default) | ERROR | WARNING | DEBUG | TRACE\n"
+		"    -o log_params=STRING\n"
+		"    --compute_levels=BOOL - same as 'compute_levels' or 'no_compute_levels'\n"
+		"    --log_level STRING    - same as '-o log_level=STRING'\n"
+		"    --log_params STRING   - same as '-o log_params=STRING'\n"
+	;
+}
+
+static int opt_proc(void *data, const char *arg, int key, struct fuse_args *outargs)
+{
+	switch (key) {
+	case KEY_HELP:
+		use(outargs->argv[0]);
+		fuse_opt_add_arg(outargs, "-h");
+		fuse_main(outargs->argc, outargs->argv, static_cast<fuse_operations*>(nullptr), nullptr);
+		exit(1);
+	}
+	return 1;
+}
 
 int main(int argc, char *argv[])
 {
-	if (argc < 3)
+	struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
+
+	memset(&options, 0, sizeof(struct options));
+	if (fuse_opt_parse(&args, &options, options_desc, opt_proc) == -1)
 	{
-		std::cerr << "use: " << argv[0] << " [options] <mount_point> <mbtiles>" << std::endl;
+		return -1;
+	}
+
+	if (args.argc < 3)
+	{
+		use(args.argv[0]);
 		return 1;
 	}
 
+	int ret;
 #ifdef USE_LOGGER
-	int ret = createLogger();
+	ret = createLogger(options.log_level, options.log_params);
 	if (ret)
 		return ret;
 #endif
 
-	if (getenv("FUSE_MBTILES_COMPUTE_LEVELS"))
-	{
-		compute_levels = true;
-	}
+	compute_levels = options.compute_levels || getenv("FUSE_MBTILES_COMPUTE_LEVELS");
 
 	// last arg - mbtiles file name
-	--argc;
-	mbtiles_filename = argv[argc];
+	--args.argc;
+	mbtiles_filename = args.argv[args.argc];
 
 	fuse_operations mbtiles_oper{};
 	mbtiles_oper.init = mbtiles_init;
@@ -611,6 +675,8 @@ int main(int argc, char *argv[])
 	mbtiles_oper.readdir = mbtiles_readdir;
 	mbtiles_oper.open = mbtiles_open;
 	mbtiles_oper.read = mbtiles_read;
-
-	return fuse_main(argc, argv, &mbtiles_oper, NULL);
+	
+	ret = fuse_main(args.argc, args.argv, &mbtiles_oper, NULL);
+	fuse_opt_free_args(&args);
+	return ret;
 }
